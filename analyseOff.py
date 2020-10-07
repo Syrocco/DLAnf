@@ -29,5 +29,5 @@ plt.xlim(-xmax-10,xmax+10)
 plt.ylim(-ymax-10,ymax+10)
 plt.show()
 
-plt.savefig('test3.png', edgecolor="black",dpi=500)
+plt.savefig('test3.png', edgecolor="black",dpi=100)
 
