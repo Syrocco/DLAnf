@@ -3,31 +3,30 @@
 #include <string.h>
 #include <time.h>
 #include <math.h>
-#define M_PI 3.14159265358979323846
+#include "mersenne.h"
 
-
+#define SQRT_2_PI 2.5066282746310002
 
 void randomShift(int shift[]);
-void boundaryInitialisation(int arraySize, int **array);
+void boundaryInitialisation(int arraySize, int** array);
 void particleInitialisation(int arraySize, int position[], float maxRad);
 void randomXandYFromRadius(float rad, int middle, int position[]);
-void tabPrintTest(int arraySize, int **array);
-float evolution(int arraySize, int **array, float maxRad, int step);
-int TestNearby(int arraySize, int **array, int x, int y);
+float evolution(int arraySize, int **array, float maxRad, int step, int nbIterations, FILE* proba);
+int TestNearby(int **array, int x, int y);
 float lenght(int posx, int posy);
-int iteration(int arraySize, int **array, int nbIterations);
+int iteration(int arraySize, int **array, int nbIterations, int probaNumber);
 void tabToTXT(int arraySize, int **array);
+void progressBar(int step, int size);
 
 
-//gcc -Wl,--stack,4194304 DLA.c -o test.x
-//gcc -Ofast -Wl,--stack,30194304 DLA.c -o test.x
 
 int main(int argc, char *argv[]){
 	srand(time(NULL));
 	
-	//int N=2000; //La taille du tableau N * N
-	int nbParticles=40000; 
-	int N=1500;
+
+	int nbParticles = 2000; 
+	int N = 1000; //Taille de la grille
+	int nbIterationsForProba = 20000; //Nombre de particules servant à établir la densité de probabilité
 	//scanf("%d",&nbParticles);
 	
 
@@ -35,14 +34,9 @@ int main(int argc, char *argv[]){
     for (int i=0; i<N; i++) 
          tab[i] = (int *)malloc(N * sizeof(int)); 
 	 
+
 	
-	//clock_t start, end;
-	//double cpu_time_used;
-	
-	
-	//start = clock();
-	
-	if (iteration(N,tab,nbParticles)){
+	if (iteration(N,tab,nbParticles, nbIterationsForProba)){
 		printf("Tout s'est bien passe\n");
 	}
 	else
@@ -50,9 +44,6 @@ int main(int argc, char *argv[]){
 		printf("L'abre a touche les bords\n");
 	}
 
-	//end = clock();
-	//cpu_time_used = ((double) (end - start)) / CLOCKS_PER_SEC;
-	//printf("%lf",cpu_time_used);
 
 	tabToTXT(N,tab);
 	
@@ -62,66 +53,130 @@ int main(int argc, char *argv[]){
 
 
 
-
-
-void tabToTXT(int arraySize, int **array){
-	FILE *fichier;
-	fichier=fopen("tab.txt","w");
- 
+int iteration(int arraySize, int **array, int nbIterations, int nbIterationsForProba){
+	float radiusParameter = 0;
+	float radiusBuffer;
+	FILE *proba;
+	proba = fopen("proba.txt","w");
 	
-	for(int i=0;i<arraySize;i++){
-		for (int j=0;j<arraySize;j++){
-			fprintf(fichier,"%d ",array[i][j]);
+	//clock_t begin = clock();
+	
+	boundaryInitialisation(arraySize,array);
+	int ctr = 0;
+	for (int i=2;i<nbIterations+2+nbIterationsForProba;i++){ //commence à 2 pour avoir une chronologie correcte
+		if (i%(int) (nbIterations/15)==0){
+			if (ctr != 14){
+				ctr++;
+			}
+			//clock_t end = clock();
+			progressBar(ctr, 15);
+			//printf("%lf, ", (double)(end - begin) / CLOCKS_PER_SEC);
+			if (i>nbIterations+2)
+				printf("\t\t\t\t Phase de calcul de la probabilite en cours...");
 		}
-    }
-	fprintf(fichier,"%d ",arraySize);
-
-	fclose(fichier);
-}
-
-
-//parceque j'en ai marre de faire des boucles tout le temps pour debugguer
-void tabPrintTest(int arraySize, int **array){
-	for (int i = 0; i < arraySize; i++){
-    	for (int j = 0; j < arraySize; j++){
-    	    printf("%d ", array[i][j]); 
+		
+		radiusBuffer=evolution(arraySize,array,radiusParameter+5,i, nbIterations, proba); //stock la distance au centre de la particule qui vient d'etre ajoutée à l'arbre
+		if (radiusBuffer>radiusParameter){
+			radiusParameter=radiusBuffer; //Enregistre la distance au centre de la particule la + éloignée
+			if (radiusParameter>arraySize/2-15){ //Teste si la particule peut potentiellement être ajoutée en dehors du tableau
+				fclose(proba);
+				return 0;
+			}
+		
 		}
-		printf("\n");
 	}
-
+	fclose(proba);
+	return 1;
 }
+
+
+//Fait evoluer la particule jusqu'à ce qu'elle en touche une autre
+float evolution(int arraySize, int **array, float maxRad, int step, int nbIterations, FILE* proba){
+	int startPosition[2];
+	int move[2] = {0,0};
+	float radiusPos;
+	particleInitialisation(arraySize, startPosition, maxRad);  //initialise l'emplacement de départ d'une particule
+	int posx = startPosition[0]; 
+	int posy = startPosition[1];
+	while (1){
+		
+		randomShift(move);
+		posx += move[0];
+		posy += move[1];
+		
+		
+		radiusPos=lenght(posx - arraySize/2, posy - arraySize/2);
+		
+		if (radiusPos > (maxRad + 5)*2 || posx>=arraySize-1 || posx<=1 || posy>=arraySize-1 || posy<=1){ //Vérifie que la particule n'est pas en dehors de la matrice et qu'elle n'est pas trop loin de la structure
+
+			particleInitialisation(arraySize, startPosition, maxRad);
+			posx = startPosition[0];
+			posy = startPosition[1];
+			
+		}
+		
+		if (radiusPos < maxRad + 4){ //Ne teste pas la position si on est en dehors de l'arbre
+			if (TestNearby(array, posx, posy)){ //Teste les collisions
+				if (step < nbIterations + 2)
+					array[posx][posy] = step;  //Ajoute la particule à l'arbre
+				else{
+					fprintf(proba, "%d\t%d\n", posx, posy); //Ajoute une particule à la probabilité
+				}
+				return radiusPos;
+			}
+		}
+	}
+}
+
+
+int TestNearby(int **array, int x, int y){ //teste si une particule est aux alentours de celle qui se balade: 8 cases
+	if (array[x+1][y+1]>0 || array[x+1][y]>0 || array[x+1][y-1]>0 || array[x-1][y]>0 || array[x-1][y+1]>0 || array[x-1][y-1]>0 || array[x][y-1]>0 || array[x][y+1]>0)
+		return 1;
+	else
+		return 0;
+}
+
+/*
+int TestNearby(int **array, int x, int y){ //teste si une particule est aux alentours de celle qui se balade: 4 cases
+	if (array[x-1][y]>0 || array[x+1][y]>0 || array[x][y-1]>0 || array[x][y+1]>0)
+		return 1;
+	else
+		return 0;
+}
+*/
+
+
 
 
 // selectionne un déplacement sur la gauche/bas/haut ou droite
 void randomShift(int shift[]){
-	int randomNum;
-	randomNum=rand()%4;
+	int randomNum = (int)(4*genrand64_real1());
 	switch (randomNum){
 		case 0:
 		{
-			shift[0]=0;
-			shift[1]=1;
+			shift[0] = 0;
+			shift[1] = 1;
 			break;
 		}
 
 		case 1:
 		{
-			shift[0]=0;
-			shift[1]=-1;
+			shift[0] = 0;
+			shift[1] = -1;
 			break;
 		}
 
 		case 2:
 		{
-			shift[0]=1;
-			shift[1]=0;
+			shift[0] = 1;
+			shift[1] = 0;
 			break;
 		}
 
 		case 3:
 		{
-			shift[0]=-1;
-			shift[1]=0;
+			shift[0] = -1;
+			shift[1] = 0;
 			break;
 		}
 	}
@@ -130,140 +185,75 @@ void randomShift(int shift[]){
 
 
 //Initialise les particules fixées au début de la simulation
-void boundaryInitialisation(int arraySize,int **array){
-	
-	
-	
+void boundaryInitialisation(int arraySize, int **array){
 	for (int i = 0; i<arraySize; i++){
 		for (int j = 0; j<arraySize; j++){
-			array[i][j]=0;
+			array[i][j] = 0;
 		}
 	}
-	array[(arraySize-1)/2][(arraySize-1)/2]=1; //plante une graine au milieu
+	array[(arraySize-1)/2][(arraySize-1)/2] = 1; //plante une graine au milieu
 }
 
 
 
 //Iinitialise la position d'une (et une seule) particule que l'on va faire diffuser
 void particleInitialisation(int arraySize, int position[], float maxRad){
-	int middle=(arraySize-1)/2;
-	randomXandYFromRadius(maxRad+5,middle,position);   //initialise une particule aléatoirement, proche des autres dans un 
+	int middle = (arraySize - 1)/2;
+	randomXandYFromRadius(maxRad + 5, middle, position);   //initialise une particule aléatoirement, proche des autres.
 }
 
 
 
-void randomXandYFromRadius(float rad, int middle, int position[]){ //prend une position random sur un cercle de rayon rad et de centre middle
-	float theta=((float)rand()/(float)(RAND_MAX))*2*M_PI;
-	int x=floor(rad*cos(theta)+middle);
-	int y=floor(rad*sin(theta)+middle);
-	position[0]=x;
-	position[1]=y;
-	
-}
-
-
-//Fait evoluer la particule jusqu'à ce qu'elle en touche une autre
-float evolution(int arraySize, int **array, float maxRad, int step){
-	int startPosition[2];
-	int move[2];
-	float radiusPos;
-	particleInitialisation(arraySize, startPosition, maxRad);  //initialise l'emplacement de départ d'une particule
-	int posx=startPosition[0]; //stocke ses positions de départ pour reinitialiser la particule si elle va trop loin
-	int posy=startPosition[1];
-	//int k=0;
-	while (1){
-		/*
-		k++;
-		
-		
-		if (k>10000000 && k<40000000){
-		//printf("start pos: %d et %d avec pos: %d et %d et rayon  %f et %f \n",startPosition[0],startPosition[1], posx, posy,radiusPos,maxRad);
-		array[posx][posy]=-k;
-		}
-		
-		
-		
-		if (k>=40000000){
-		printf("ok");
-		FILE * fp;
-		fp = fopen ("tab.txt","w");
-	 
-		for(int i=0; i < arraySize;i++){
-			for (int j=0; j<arraySize;j++){
-				fprintf (fp, "%d ",array[i][j]);
-		
-			}
-		
-		}
-		fprintf (fp, "%d ",arraySize);
-		fclose (fp);
-		exit(0);
-		
-		}*/
-		randomShift(move);
-		posx+=move[0];
-		posy+=move[1];
-		
-		
-		radiusPos=lenght(posx-arraySize/2,posy-arraySize/2);
-		
-		if (radiusPos>(3+maxRad)*2 || posx>=arraySize-1 || posx<=1 || posy>=arraySize-1 || posy<=1){ //marche que pour boundaryType 1 à generaliser après... Quel enfer ! Teste si la particule se trouve encore dans l'array et pas trop loin des autres graines (si elle est deux fois plus loin que la particule la plus eloignée du centre, je reinitialise)
-
-			particleInitialisation(arraySize, startPosition, maxRad);
-			posx=startPosition[0];
-			posy=startPosition[1];
-		}
-		
-		if (radiusPos<maxRad+4){ //Ne teste pas la position si en dehors de l'arbre*/
-			if (TestNearby(arraySize,array,posx,posy)){
-				array[posx][posy]=step;  //metre step si on veut avoir la chronologie (première particule = 2, deuxieme particule = 3,...), fixe la position de la particule si elle est proche d'une autre deja fixée.
-				return radiusPos;
-			}
-		}
-
-	}
-}
-
-
-int iteration(int arraySize, int **array, int nbIterations){
-	float radiusParameter=0;
-	float radiusBuffer;
-	
-	boundaryInitialisation(arraySize,array);
-	for (int i=2;i<nbIterations+2;i++){ //commence à 2 pour avoir une chronologie correcte
-		if (i%(int) (nbIterations/100)==0){
-			printf("%d/%d\n",i,nbIterations);
-		}
-		
-		radiusBuffer=evolution(arraySize,array,radiusParameter+5,i); //stock la distance au centre de la particule qui vient d'etre ajoutée à l'arbre
-		if (radiusBuffer>radiusParameter){
-			radiusParameter=radiusBuffer; //Enregistre la distance au centre de la particule la + éloignée
-			if (radiusParameter>arraySize/2-15){ //Test si la particule peut potentiellement être ajoutée en dehors du tableau
-				
-				return 0;
-			}
-		
-		}
-	}
-	return 1;
-}
-
-
-
-int TestNearby(int arraySize, int **array, int x, int y){ //test si une particule est aux alentours de celle qui se balade
-	if (array[x+1][y+1]>0 || array[x+1][y]>0 || array[x+1][y-1]>0 || array[x-1][y]>0 || array[x-1][y+1]>0 || array[x-1][y-1]>0 || array[x][y-1]>0 || array[x][y+1]>0){
-		return 1;
-	}
-	else
-	{
-		return 0;
-	}
-}
 
 float lenght(int posx, int posy){
 	return sqrt(posx*posx+posy*posy);
 	
 }
+
+//Convertit (r,theta) -> (x,y)
+void randomXandYFromRadius(float rad, int middle, int position[]){ //prend une position random sur un cercle de rayon rad et de centre middle
+	float theta = ((float)rand()/(float)(RAND_MAX))*2*M_PI;
+	int x = floor(rad*cos(theta) + middle);
+	int y = floor(rad*sin(theta) + middle);
+	position[0] = x;
+	position[1] = y;
+	
+}
+
+
+void tabToTXT(int arraySize, int **array){
+	FILE *fichier;
+	fichier = fopen("tab.txt","w");
+ 
+	
+	for(int i = 0; i < arraySize; i++){
+		for (int j = 0; j < arraySize; j++){
+			fprintf(fichier, "%d ", array[i][j]);
+		}
+		fprintf(fichier, "\n");
+    }
+	fclose(fichier);
+}
+
+
+
+void progressBar(int step, int size){
+	printf("\033[A\r["); // \033[A monte à la ligne du dessus et \r l'efface, permet de mettre un \n à l'avant dernier print et donc d'avoir un retour à la ligne à la fin du programme... Sous Windows ça ne marche pas.
+	
+	for (int i = 0; i < size; i++){
+		if (i <= step){
+			printf("#");
+		}
+		else{ 
+			printf(" ");		
+		}
+	}
+	printf("] - %.2f %%   \n", (float) step/(size-1)*100);
+	fflush(stdout); //sinon printf utilise un buffer :/
+		
+}
+
+
 
 
 
